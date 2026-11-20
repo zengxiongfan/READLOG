@@ -3,6 +3,7 @@ import { listen as tauriListen } from "@tauri-apps/api/event";
 import { save as tauriSave } from "@tauri-apps/plugin-dialog";
 import type { EventCallback, UnlistenFn } from "@tauri-apps/api/event";
 import type { AppConfig, ConnectionCheckResult, DirEntry, DownloadSummary, LogEntry } from "../types/query";
+import { DEFAULT_AGENT_PROMPT } from "./agentPrompt";
 
 export function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -12,11 +13,14 @@ const emptyConfig: AppConfig = {
   baseUrl: "",
   logEntries: [],
   credentials: { username: "", password: "" },
+  groupOrder: [],
+  entryOrder: {},
   settings: {
     maxConcurrentServers: 3,
     defaultBatchSize: 500,
     defaultLevel: "ALL",
     downloadPath: "",
+    agentPromptTemplate: DEFAULT_AGENT_PROMPT,
   },
 };
 
@@ -24,7 +28,15 @@ function readBrowserConfig() {
   const raw = localStorage.getItem("readlog.config");
   if (!raw) return emptyConfig;
   try {
-    return JSON.parse(raw) as AppConfig;
+    const parsed = JSON.parse(raw) as Partial<AppConfig>;
+    return {
+      ...emptyConfig,
+      ...parsed,
+      credentials: { ...emptyConfig.credentials, ...parsed.credentials },
+      settings: { ...emptyConfig.settings, ...parsed.settings },
+      groupOrder: parsed.groupOrder ?? [],
+      entryOrder: parsed.entryOrder ?? {},
+    };
   } catch {
     return emptyConfig;
   }
@@ -68,8 +80,8 @@ export async function invoke<T>(command: string, args?: Record<string, unknown>)
     case "download_selected_archive_files":
       return {
         serverCount: (args?.logEntryIds as string[] | undefined)?.length ?? (args?.fileUrls as string[] | undefined)?.length ?? 0,
-        bytesWritten: 0,
-        outputPath: String(args?.outputPath ?? ""),
+        bytesWritten: 8 * 1024 * 1024,
+        outputPath: String(args?.outputPath ?? "") || "C:\\Users\\Public\\Downloads\\readlog-preview\\app.log",
       } satisfies DownloadSummary as T;
     case "list_archive_files":
       return [

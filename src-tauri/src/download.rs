@@ -89,15 +89,8 @@ pub async fn download_archive_logs(
     output_path: &str,
 ) -> AppResult<DownloadSummary> {
     let log_type = entries.first().map_or("app".to_string(), |e| extract_log_type(&e.log_file));
-    let base_output_path = if output_path.trim().is_empty() {
-        let mut path = dirs::download_dir()
-            .or_else(dirs::home_dir)
-            .ok_or_else(|| AppError::NotFound("Downloads directory".to_string()))?;
-        path.push(format!("{log_type}_archive_{month}-{day}_{:02}h-{:02}h.log", hour_start, hour_end));
-        path
-    } else {
-        PathBuf::from(output_path)
-    };
+    let filename = format!("{log_type}_archive_{month}-{day}_{hour_start:02}h-{hour_end:02}h.log");
+    let base_output_path = resolve_archive_output_path(output_path, &filename)?;
     let password = crate::crypto::reveal_password(&credentials.password)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
@@ -284,6 +277,23 @@ pub async fn download_tail_logs(
     })
 }
 
+fn resolve_archive_output_path(output_path: &str, filename: &str) -> AppResult<PathBuf> {
+    if output_path.trim().is_empty() {
+        let mut path = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .ok_or_else(|| AppError::NotFound("Downloads directory".to_string()))?;
+        path.push(filename);
+        return Ok(path);
+    }
+
+    let path = PathBuf::from(output_path);
+    if path.is_dir() {
+        Ok(path.join(filename))
+    } else {
+        Ok(path)
+    }
+}
+
 fn resolve_output_path(output_path: &str, entry_name: &str, mode: &str) -> AppResult<PathBuf> {
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let safe_name = entry_name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
@@ -376,16 +386,8 @@ pub async fn download_selected_archive_files(
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
-    let base_output_path = if output_path.trim().is_empty() {
-        let mut path = dirs::download_dir()
-            .or_else(dirs::home_dir)
-            .ok_or_else(|| AppError::NotFound("Downloads directory".to_string()))?;
-        let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-        path.push(format!("archive_selected_{stamp}.log"));
-        path
-    } else {
-        PathBuf::from(output_path)
-    };
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let base_output_path = resolve_archive_output_path(output_path, &format!("archive_selected_{stamp}.log"))?;
     if let Some(parent) = base_output_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -462,4 +464,29 @@ pub async fn download_selected_archive_files(
         bytes_written: total_bytes,
         output_path: output_paths.join(", "),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_archive_output_path;
+
+    #[test]
+    fn joins_filename_when_output_path_is_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let resolved = resolve_archive_output_path(dir.path().to_str().unwrap(), "archive.log").unwrap();
+
+        assert_eq!(resolved, dir.path().join("archive.log"));
+    }
+
+    #[test]
+    fn keeps_explicit_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("custom.log");
+        std::fs::write(&file, b"").unwrap();
+
+        let resolved = resolve_archive_output_path(file.to_str().unwrap(), "archive.log").unwrap();
+
+        assert_eq!(resolved, file);
+    }
 }

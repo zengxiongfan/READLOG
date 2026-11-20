@@ -135,14 +135,8 @@ fn check_agent_status() -> Result<AgentStatus, AppError> {
 }
 
 #[tauri::command]
-fn copy_agent_prompt(file_path: String) -> Result<(), AppError> {
-    let full_prompt = format!(
-        "以下是需要分析的日志文件路径：{}\n\n\
-         请围绕我的问题分析该日志，只提取与问题相关的内容，忽略无关信息。不要主动读取其他日志文件，但我在问题中明确要求查看的文件（如源码、配置等）除外。结论优先，细节随后。\n\n\
-         我的问题：",
-        file_path
-    );
-    copy_to_clipboard(&full_prompt)
+fn copy_agent_prompt(text: String) -> Result<(), AppError> {
+    copy_to_clipboard(&text)
 }
 
 /// readgcislog 命令行工具与主程序安装在同一目录。

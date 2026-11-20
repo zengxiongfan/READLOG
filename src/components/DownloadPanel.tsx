@@ -1,8 +1,10 @@
-import { Archive, ChevronRight, Copy, Download, FileText, FolderInput, FolderOpen, RefreshCw, Scissors, X } from "lucide-react";
+import { Archive, ChevronRight, Copy, Download, FileText, FolderInput, FolderOpen, RefreshCw, Scissors, Settings, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { DEFAULT_AGENT_PROMPT, renderAgentPrompt } from "../lib/agentPrompt";
 import { invoke, pickDirectory } from "../lib/runtime";
 import { useServerStore } from "../store/serverStore";
 import type { DirEntry, DownloadSummary } from "../types/query";
+import { PromptModal } from "./PromptModal";
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -42,6 +44,7 @@ export function DownloadPanel() {
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [showPromptModal, setShowPromptModal] = useState(false);
   const [breadcrumbs, setBreadcrumbs] = useState<Array<{ name: string; url: string }>>([]);
   const [tailLineCount, setTailLineCount] = useState("500");
   const [agentInstalled, setAgentInstalled] = useState(false);
@@ -220,9 +223,12 @@ export function DownloadPanel() {
   const handleCopyPrompt = async () => {
     if (!outputPath) return;
     try {
-      await invoke("copy_agent_prompt", { filePath: outputPath });
+      const template = config.settings.agentPromptTemplate || DEFAULT_AGENT_PROMPT;
+      await invoke("copy_agent_prompt", { text: renderAgentPrompt(template, outputPath) });
       setMessage("提示词已复制到剪切板，请打开 ai工具 粘贴");
-    } catch (caught) { setError(String(caught)); }
+    } catch (caught) {
+      setError(String(caught));
+    }
   };
 
   const fileCount = archiveFiles.filter((f) => !f.isDir).length;
@@ -378,6 +384,9 @@ export function DownloadPanel() {
                 <button type="button" onClick={() => void handleCopyPrompt()} className="inline-flex items-center gap-1 rounded border border-[#7c3aed] px-2 py-1 text-xs text-[#7c3aed] hover:bg-[#7c3aed] hover:text-white">
                   <Copy size={14} /> 复制提示词
                 </button>
+                <button type="button" aria-label="编辑提示词模板" title="预览/编辑提示词模板" onClick={() => setShowPromptModal(true)} className="inline-flex items-center rounded border border-[#7c3aed] px-1.5 py-1 text-xs text-[#7c3aed] hover:bg-[#7c3aed] hover:text-white">
+                  <Settings size={14} />
+                </button>
               </div>
             )}
           </div>
@@ -495,6 +504,17 @@ export function DownloadPanel() {
             </div>
           </div>
         </div>
+      )}
+
+      {showPromptModal && outputPath && (
+        <PromptModal
+          filePath={outputPath}
+          onClose={() => setShowPromptModal(false)}
+          onCopied={() => {
+            setShowPromptModal(false);
+            setMessage("提示词已复制到剪切板，请打开 ai工具 粘贴");
+          }}
+        />
       )}
     </section>
   );

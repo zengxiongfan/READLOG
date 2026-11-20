@@ -57,11 +57,14 @@ export interface AppConfig {
     username: string;
     password: string;
   };
+  groupOrder: string[];
+  entryOrder: Record<string, string[]>;
   settings: {
     maxConcurrentServers: number;
     defaultBatchSize: number;
     defaultLevel: LogLevel;
     downloadPath: string;
+    agentPromptTemplate: string;
   };
 }
 

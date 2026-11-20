@@ -15,7 +15,11 @@ interface ServerState {
   toggleLogEntryVisible: (entryId: string) => Promise<void>;
   toggleGroup: (groupId: string) => Promise<void>;
   toggleGroupVisible: (groupId: string) => Promise<void>;
+  renameGroup: (groupId: string, name: string) => Promise<void>;
   deleteGroup: (groupId: string) => Promise<void>;
+  saveGroupOrder: (ids: string[]) => Promise<void>;
+  saveEntryOrder: (groupId: string, ids: string[]) => Promise<void>;
+  resetEntryOrder: () => Promise<void>;
 }
 
 // Keep rapid manual selections responsive while writing snapshots in order.
@@ -31,8 +35,13 @@ export const useServerStore = create<ServerState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const config = await invoke<AppConfig>("load_app_config");
-      persistedConfig = config;
-      set({ config, loading: false });
+      // Selection is session-scoped: every launch starts with nothing checked.
+      const sessionConfig = {
+        ...config,
+        logEntries: config.logEntries.map((entry) => (entry.enabled ? { ...entry, enabled: false } : entry)),
+      };
+      persistedConfig = sessionConfig;
+      set({ config: sessionConfig, loading: false });
     } catch (error) {
       set({ error: String(error), loading: false });
     }
@@ -67,7 +76,12 @@ export const useServerStore = create<ServerState>((set, get) => ({
     const logEntries = config.logEntries
       .filter((entry) => entry.id !== entryId)
       .map((entry, displayOrder) => ({ ...entry, displayOrder }));
-    await get().save({ ...config, logEntries });
+    const entryOrder = Object.fromEntries(
+      Object.entries(config.entryOrder)
+        .map(([groupId, ids]) => [groupId, ids.filter((id) => id !== entryId)])
+        .filter(([, ids]) => ids.length > 0),
+    );
+    await get().save({ ...config, logEntries, entryOrder });
   },
   toggleLogEntry: async (entryId) => {
     await get().toggleLogEntries([entryId]);
@@ -112,12 +126,39 @@ export const useServerStore = create<ServerState>((set, get) => ({
     );
     await get().save({ ...config, logEntries });
   },
+  renameGroup: async (groupId, name) => {
+    const config = get().config;
+    if (!config) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const logEntries = config.logEntries.map((entry) =>
+      entry.groupId === groupId ? { ...entry, groupName: trimmed } : entry,
+    );
+    await get().save({ ...config, logEntries });
+  },
   deleteGroup: async (groupId) => {
     const config = get().config;
     if (!config) return;
     const logEntries = config.logEntries
       .filter((entry) => entry.groupId !== groupId)
       .map((entry, displayOrder) => ({ ...entry, displayOrder }));
-    await get().save({ ...config, logEntries });
+    const entryOrder = { ...config.entryOrder };
+    delete entryOrder[groupId];
+    await get().save({ ...config, logEntries, entryOrder, groupOrder: config.groupOrder.filter((id) => id !== groupId) });
+  },
+  saveGroupOrder: async (ids) => {
+    const config = get().config;
+    if (!config) return;
+    await get().save({ ...config, groupOrder: ids });
+  },
+  saveEntryOrder: async (groupId, ids) => {
+    const config = get().config;
+    if (!config) return;
+    await get().save({ ...config, entryOrder: { ...config.entryOrder, [groupId]: ids } });
+  },
+  resetEntryOrder: async () => {
+    const config = get().config;
+    if (!config) return;
+    await get().save({ ...config, groupOrder: [], entryOrder: {} });
   },
 }));

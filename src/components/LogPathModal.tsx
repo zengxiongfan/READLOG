@@ -34,7 +34,7 @@ interface GroupDraft {
   name: string;
 }
 
-type FormMode = null | { type: "add-entry"; draft: EntryDraft } | { type: "edit-entry"; draft: EntryDraft } | { type: "add-group"; draft: GroupDraft };
+type FormMode = null | { type: "add-entry"; draft: EntryDraft } | { type: "edit-entry"; draft: EntryDraft } | { type: "add-group"; draft: GroupDraft } | { type: "edit-group"; groupId: string; draft: GroupDraft };
 
 const emptyEntryDraft = (groupId = "", groupName = ""): EntryDraft => ({
   id: crypto.randomUUID(),
@@ -45,12 +45,22 @@ const emptyEntryDraft = (groupId = "", groupName = ""): EntryDraft => ({
   groupName,
 });
 
-function groupEntries(entries: LogEntry[]): Map<string, { name: string; entries: LogEntry[] }> {
-  return new Map(groupLogEntries(entries).filter(([id]) => id));
+type OrderOptions = { groupOrder?: string[]; entryOrder?: Record<string, string[]> };
+
+function groupEntries(entries: LogEntry[], options?: OrderOptions): Map<string, { name: string; entries: LogEntry[] }> {
+  return new Map(groupLogEntries(entries, options).filter(([id]) => id));
 }
 
-function getUngrouped(entries: LogEntry[]): LogEntry[] {
-  return sortLogEntries(entries.filter((e) => !e.groupId));
+function getUngrouped(entries: LogEntry[], options?: OrderOptions): LogEntry[] {
+  return sortLogEntries(entries.filter((e) => !e.groupId), options?.entryOrder?.[""]);
+}
+
+function groupIsAllVisible(entries: LogEntry[]) {
+  return entries.length > 0 && entries.every((e) => e.visible);
+}
+
+function groupIsNoneVisible(entries: LogEntry[]) {
+  return entries.length > 0 && entries.every((e) => !e.visible);
 }
 
 function parseFullUrl(fullUrl: string): { path: string; logFile: string } {
@@ -64,7 +74,7 @@ function parseFullUrl(fullUrl: string): { path: string; logFile: string } {
 
 export function LogPathModal({ onClose }: Props) {
   const config = useServerStore((state) => state.config);
-  const { upsertLogEntry, deleteLogEntry, toggleLogEntryVisible, toggleGroup, toggleGroupVisible, deleteGroup, save } =
+  const { upsertLogEntry, deleteLogEntry, toggleLogEntryVisible, toggleGroupVisible, renameGroup, deleteGroup, save } =
     useServerStore();
   const [form, setForm] = useState<FormMode>(null);
   const [error, setError] = useState("");
@@ -76,8 +86,9 @@ export function LogPathModal({ onClose }: Props) {
 
   if (!config) return null;
 
-  const groups = groupEntries(config.logEntries);
-  const ungrouped = getUngrouped(config.logEntries);
+  const orderOptions = { groupOrder: config.groupOrder, entryOrder: config.entryOrder };
+  const groups = groupEntries(config.logEntries, orderOptions);
+  const ungrouped = getUngrouped(config.logEntries, orderOptions);
 
   const toggleExpand = (groupId: string) => {
     setExpandedGroups((prev) => {
@@ -133,6 +144,22 @@ export function LogPathModal({ onClose }: Props) {
     await upsertLogEntry(entry);
     setExpandedGroups((prev) => new Set(prev).add(groupId));
     setForm(null);
+  };
+
+  const handleRenameGroup = async () => {
+    if (!form || form.type !== "edit-group") return;
+    const name = form.draft.name.trim();
+    if (!name) { setError("分组名称不能为空"); return; }
+    setError("");
+    await renameGroup(form.groupId, name);
+    setForm(null);
+  };
+
+  const submitForm = () => {
+    if (!form) return;
+    if (form.type === "add-entry" || form.type === "edit-entry") void handleSaveEntry();
+    else if (form.type === "edit-group") void handleRenameGroup();
+    else void handleSaveGroup();
   };
 
   const handleDeleteGroup = async (groupId: string) => {
@@ -200,7 +227,7 @@ export function LogPathModal({ onClose }: Props) {
         return;
       }
 
-      await save({ ...config, logEntries: entries });
+      await save({ ...config, logEntries: entries, groupOrder: [], entryOrder: {} });
       setExpandedGroups(new Set(groupMap.values()));
       setForm(null);
       setError("");
@@ -247,14 +274,24 @@ export function LogPathModal({ onClose }: Props) {
                 </span>
                 <div className="ml-auto flex items-center gap-1">
                   <button
-                    className={`rounded p-1 ${
-                      group.entries.every((e) => e.visible) ? "text-[#2563eb] hover:bg-[#dce4f0]" : "text-[#9ca3af] hover:bg-[#dce4f0]"
+                    className={`rounded p-1 hover:bg-[#dce4f0] ${
+                      groupIsAllVisible(group.entries)
+                        ? "text-[#2563eb]"
+                        : groupIsNoneVisible(group.entries)
+                          ? "text-[#9ca3af]"
+                          : "text-[#94a3b8]"
                     }`}
                     type="button"
                     onClick={() => void toggleGroupVisible(groupId)}
-                    title={group.entries.every((e) => e.visible) ? "整组隐藏" : "整组显示"}
+                    title={
+                      groupIsAllVisible(group.entries)
+                        ? "整组隐藏"
+                        : groupIsNoneVisible(group.entries)
+                          ? "整组显示"
+                          : `部分日志已隐藏（${group.entries.filter((e) => e.visible).length}/${group.entries.length}），点击全部显示`
+                    }
                   >
-                    {group.entries.every((e) => e.visible) ? <Eye size={14} /> : <EyeOff size={14} />}
+                    {groupIsNoneVisible(group.entries) ? <EyeOff size={14} /> : <Eye size={14} />}
                   </button>
                   <button
                     className="rounded p-1 text-[#2563eb] hover:bg-[#dce4f0]"
@@ -266,6 +303,17 @@ export function LogPathModal({ onClose }: Props) {
                     title="在此组添加日志"
                   >
                     <Plus size={14} />
+                  </button>
+                  <button
+                    className="rounded p-1 text-[#607086] hover:bg-[#dce4f0]"
+                    type="button"
+                    onClick={() => {
+                      setForm({ type: "edit-group", groupId, draft: { name: group.name } });
+                      setError("");
+                    }}
+                    title="重命名分组"
+                  >
+                    <Edit2 size={14} />
                   </button>
                   <button
                     className="rounded p-1 text-[#b42318] hover:bg-[#fee4e2]"
@@ -394,113 +442,96 @@ export function LogPathModal({ onClose }: Props) {
             <p className="py-8 text-center text-sm text-[#9ca3af]">暂无日志配置，请添加分组/日志或导入配置</p>
           )}
 
-          {/* Inline form */}
-          {form && (form.type === "add-entry" || form.type === "edit-entry") && (
-            <div className="mt-4 rounded-md border border-[#cfd8e6] bg-[#f0f4fa] p-4">
-              <h3 className="mb-3 text-sm font-semibold text-[#243145]">
-                {form.type === "edit-entry" ? "编辑日志" : "添加日志"}
-              </h3>
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
+        {form && (
+          <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#162033]/35" onClick={() => { setForm(null); setError(""); }}>
+            <div className="w-[520px] max-w-[92vw] rounded-lg border border-[#d9e0eb] bg-white shadow-xl"
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => { if (event.key === "Enter" && (event.target as HTMLElement).tagName === "INPUT") void submitForm(); }}>
+              <div className="flex items-center justify-between border-b border-[#e3e8f0] px-5 py-3.5">
+                <h2 className="text-sm font-semibold">
+                  {form.type === "edit-entry" ? "编辑日志" : form.type === "add-entry" ? "添加日志" : form.type === "edit-group" ? "重命名分组" : "新建分组"}
+                </h2>
+                <button className="rounded-md p-1.5 text-[#5d6b82] hover:bg-[#eef3f8]" type="button" aria-label="关闭" onClick={() => { setForm(null); setError(""); }}>
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="space-y-3 px-5 py-4">
+                {form.type === "add-entry" || form.type === "edit-entry" ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className="block text-sm font-medium">
+                        所属分组
+                        <select
+                          className="mt-1 w-full rounded-md border border-[#cfd8e6] bg-white px-3 py-2 outline-none focus:border-[#2563eb]"
+                          value={(form.draft as EntryDraft).groupId}
+                          onChange={(e) => {
+                            const selectedGroupId = e.target.value;
+                            const selectedGroupName = e.target.options[e.target.selectedIndex].text;
+                            setForm({ ...form, draft: { ...(form.draft as EntryDraft), groupId: selectedGroupId, groupName: selectedGroupId ? selectedGroupName : "" } });
+                          }}
+                        >
+                          <option value="">（不使用分组）</option>
+                          {Array.from(groups.entries()).map(([id, g]) => (
+                            <option key={id} value={id}>{g.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="block text-sm font-medium">
+                        日志名称
+                        <input
+                          className="mt-1 w-full rounded-md border border-[#cfd8e6] bg-white px-3 py-2 outline-none focus:border-[#2563eb]"
+                          value={(form.draft as EntryDraft).name}
+                          placeholder="如：cgis-web-benefit"
+                          autoFocus
+                          onChange={(e) => setForm({ ...form, draft: { ...(form.draft as EntryDraft), name: e.target.value } })}
+                        />
+                      </label>
+                    </div>
+                    <label className="block text-sm font-medium">
+                      URL 路径
+                      <input
+                        className="mt-1 w-full rounded-md border border-[#cfd8e6] bg-white px-3 py-2 outline-none focus:border-[#2563eb]"
+                        value={(form.draft as EntryDraft).path}
+                        placeholder="如：/logs/service/node/"
+                        onChange={(e) => setForm({ ...form, draft: { ...(form.draft as EntryDraft), path: e.target.value } })}
+                      />
+                    </label>
+                    <label className="block text-sm font-medium">
+                      日志文件名
+                      <input
+                        className="mt-1 w-full rounded-md border border-[#cfd8e6] bg-white px-3 py-2 outline-none focus:border-[#2563eb]"
+                        value={(form.draft as EntryDraft).logFile}
+                        placeholder="如：app.log 或 app.log.gz"
+                        onChange={(e) => setForm({ ...form, draft: { ...(form.draft as EntryDraft), logFile: e.target.value } })}
+                      />
+                    </label>
+                  </>
+                ) : (
                   <label className="block text-sm font-medium">
-                    所属分组
-                    <select
-                      className="mt-1 w-full rounded-md border border-[#cfd8e6] bg-white px-3 py-2 outline-none focus:border-[#2563eb]"
-                      value={form.draft.groupId}
-                      onChange={(e) => {
-                        const selectedGroupId = e.target.value;
-                        const selectedGroupName = e.target.options[e.target.selectedIndex].text;
-                        setForm({ ...form, draft: { ...form.draft, groupId: selectedGroupId, groupName: selectedGroupId ? selectedGroupName : "" } });
-                      }}
-                    >
-                      <option value="">（不使用分组）</option>
-                      {Array.from(groups.entries()).map(([id, g]) => (
-                        <option key={id} value={id}>{g.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="block text-sm font-medium">
-                    日志名称
+                    分组名称
                     <input
                       className="mt-1 w-full rounded-md border border-[#cfd8e6] bg-white px-3 py-2 outline-none focus:border-[#2563eb]"
-                      value={(form.draft as EntryDraft).name}
-                      placeholder="如：cgis-web-benefit"
-                      onChange={(e) => setForm({ ...form, draft: { ...(form.draft as EntryDraft), name: e.target.value } })}
+                      value={form.draft.name}
+                      placeholder="如：核心服务"
+                      autoFocus
+                      onChange={(e) => setForm({ ...form, draft: { name: e.target.value } })}
                     />
                   </label>
-                </div>
-                <label className="block text-sm font-medium">
-                  URL 路径
-                  <input
-                    className="mt-1 w-full rounded-md border border-[#cfd8e6] bg-white px-3 py-2 outline-none focus:border-[#2563eb]"
-                    value={(form.draft as EntryDraft).path}
-                    placeholder="如：/logs/service/node/"
-                    onChange={(e) => setForm({ ...form, draft: { ...(form.draft as EntryDraft), path: e.target.value } })}
-                  />
-                </label>
-                <label className="block text-sm font-medium">
-                  日志文件名
-                  <input
-                    className="mt-1 w-full rounded-md border border-[#cfd8e6] bg-white px-3 py-2 outline-none focus:border-[#2563eb]"
-                    value={(form.draft as EntryDraft).logFile}
-                    placeholder="如：app.log 或 app.log.gz"
-                    onChange={(e) => setForm({ ...form, draft: { ...(form.draft as EntryDraft), logFile: e.target.value } })}
-                  />
-                </label>
+                )}
                 {error && <div className="rounded-md bg-[#fff1f3] px-3 py-2 text-sm text-[#b42318]">{error}</div>}
-                <div className="flex justify-end gap-3">
-                  <button
-                    className="rounded-md border border-[#cfd8e6] px-4 py-2 text-sm hover:bg-[#f2f5f9]"
-                    type="button"
-                    onClick={() => { setForm(null); setError(""); }}
-                  >
-                    取消
-                  </button>
-                  <button
-                    className="rounded-md bg-[#2563eb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1d4ed8]"
-                    type="button"
-                    onClick={() => void handleSaveEntry()}
-                  >
-                    保存
-                  </button>
-                </div>
               </div>
-            </div>
-          )}
-
-          {form && form.type === "add-group" && (
-            <div className="mt-4 rounded-md border border-[#cfd8e6] bg-[#f0f4fa] p-4">
-              <h3 className="mb-3 text-sm font-semibold text-[#243145]">新建分组</h3>
-              <div className="flex items-end gap-3">
-                <label className="flex-1 text-sm font-medium">
-                  分组名称
-                  <input
-                    className="mt-1 w-full rounded-md border border-[#cfd8e6] bg-white px-3 py-2 outline-none focus:border-[#2563eb]"
-                    value={form.draft.name}
-                    placeholder="如：核心服务"
-                    autoFocus
-                    onChange={(e) => setForm({ type: "add-group", draft: { name: e.target.value } })}
-                    onKeyDown={(e) => { if (e.key === "Enter") void handleSaveGroup(); }}
-                  />
-                </label>
-                <button
-                  className="rounded-md border border-[#cfd8e6] px-4 py-2 text-sm hover:bg-[#f2f5f9]"
-                  type="button"
-                  onClick={() => { setForm(null); setError(""); }}
-                >
+              <div className="flex justify-end gap-3 border-t border-[#e3e8f0] px-5 py-3.5">
+                <button className="rounded-md border border-[#cfd8e6] px-4 py-2 text-sm hover:bg-[#f2f5f9]" type="button" onClick={() => { setForm(null); setError(""); }}>
                   取消
                 </button>
-                <button
-                  className="rounded-md bg-[#2563eb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1d4ed8]"
-                  type="button"
-                  onClick={() => void handleSaveGroup()}
-                >
-                  创建
+                <button className="rounded-md bg-[#2563eb] px-4 py-2 text-sm font-medium text-white hover:bg-[#1d4ed8]" type="button" onClick={() => void submitForm()}>
+                  {form.type === "add-group" ? "创建" : "保存"}
                 </button>
               </div>
-              {error && <div className="mt-2 rounded-md bg-[#fff1f3] px-3 py-2 text-sm text-[#b42318]">{error}</div>}
             </div>
-          )}
+          </div>
+        )}
+
         </div>
 
         {/* Footer */}
