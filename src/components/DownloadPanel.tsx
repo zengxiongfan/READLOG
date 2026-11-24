@@ -225,7 +225,7 @@ export function DownloadPanel() {
     try {
       const template = config.settings.agentPromptTemplate || DEFAULT_AGENT_PROMPT;
       await invoke("copy_agent_prompt", { text: renderAgentPrompt(template, outputPath) });
-      setMessage("提示词已复制到剪切板，请打开 ai工具 粘贴");
+      setMessage("提示词已复制，请打开 AI 工具粘贴");
     } catch (caught) {
       setError(String(caught));
     }
@@ -382,9 +382,9 @@ export function DownloadPanel() {
                   <FolderOpen size={14} /> 打开文件夹
                 </button>
                 <button type="button" onClick={() => void handleCopyPrompt()} className="inline-flex items-center gap-1 rounded border border-[#7c3aed] px-2 py-1 text-xs text-[#7c3aed] hover:bg-[#7c3aed] hover:text-white">
-                  <Copy size={14} /> 复制提示词
+                  <Copy size={14} /> 复制提示词给 AI
                 </button>
-                <button type="button" aria-label="编辑提示词模板" title="预览/编辑提示词模板" onClick={() => setShowPromptModal(true)} className="inline-flex items-center rounded border border-[#7c3aed] px-1.5 py-1 text-xs text-[#7c3aed] hover:bg-[#7c3aed] hover:text-white">
+                <button type="button" aria-label="编辑日志分析提示词" title="预览/编辑日志分析提示词" onClick={() => setShowPromptModal(true)} className="inline-flex items-center rounded border border-[#7c3aed] px-1.5 py-1 text-xs text-[#7c3aed] hover:bg-[#7c3aed] hover:text-white">
                   <Settings size={14} />
                 </button>
               </div>
@@ -512,7 +512,7 @@ export function DownloadPanel() {
           onClose={() => setShowPromptModal(false)}
           onCopied={() => {
             setShowPromptModal(false);
-            setMessage("提示词已复制到剪切板，请打开 ai工具 粘贴");
+            setMessage("提示词已复制，请打开 AI 工具粘贴");
           }}
         />
       )}

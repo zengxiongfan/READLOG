@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, ChevronRight, ExternalLink, Eye, EyeOff, GripVertical, PlugZap, RotateCcw, Save, Search, Settings, Tag, X, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, ExternalLink, Eye, EyeOff, GripVertical, Pencil, PlugZap, RotateCcw, Save, Search, Settings, Tag, X, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "../lib/runtime";
@@ -16,6 +16,7 @@ type DropTarget = { kind: "group" | "entry"; id: string; position: "before" | "a
 export function ServerConfig({ view = "all" }: { view?: "all" | "connection" | "scope" }) {
   const { config, toggleLogEntry, toggleLogEntries, save, upsertLogEntry, saveGroupOrder, saveEntryOrder, resetEntryOrder } = useServerStore();
   const [showModal, setShowModal] = useState(false);
+  const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [authDraft, setAuthDraft] = useState({ username: "", password: "" });
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -172,6 +173,12 @@ export function ServerConfig({ view = "all" }: { view?: "all" | "connection" | "
     setAliasEdit(null);
   };
 
+  const openEntryEdit = (entryId: string) => {
+    setEditEntryId(entryId);
+    setShowModal(true);
+    setContextMenu(null);
+  };
+
   const renderEntry = (entry: LogEntry) => {
     const check = checks[entry.id];
     const dirUrl = config.baseUrl.replace(/\/+$/, "") + "/" + entry.path.replace(/^\/+/, "");
@@ -193,7 +200,7 @@ export function ServerConfig({ view = "all" }: { view?: "all" | "connection" | "
         }}
         onContextMenu={event => {
           event.preventDefault();
-          setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 152)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 88)), dirUrl, entryId: entry.id });
+          setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 152)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 124)), dirUrl, entryId: entry.id });
         }}
         className={`server-entry ${entry.enabled ? "server-entry-selected" : ""}`}>
         <span role="button" tabIndex={-1} title={filtering ? "筛选时不能拖动排序" : "拖动排序"} aria-label={`拖动排序 ${entry.name}`}
@@ -250,7 +257,7 @@ export function ServerConfig({ view = "all" }: { view?: "all" | "connection" | "
 
       {view !== "connection" && <div className={view === "all" ? "flex min-h-0 flex-1 flex-col gap-2.5" : "space-y-2.5"}>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <button className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[#cfd8e6] bg-[#f8fafc] px-3 py-2 text-xs font-medium text-[#607086] hover:bg-[#eef3f8]" type="button" onClick={() => setShowModal(true)}><Settings size={14} />日志路径配置</button>
+          <button className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[#cfd8e6] bg-[#f8fafc] px-3 py-2 text-xs font-medium text-[#607086] hover:bg-[#eef3f8]" type="button" onClick={() => { setEditEntryId(null); setShowModal(true); }}><Settings size={14} />日志路径配置</button>
           <div className="relative min-w-[180px] flex-1">
             <Search size={14} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[#94a3b8]" />
             <input type="search" aria-label="筛选服务器配置" className="server-filter w-full rounded-md border border-[#cfd8e6] bg-white py-2 pl-8 pr-8 text-xs outline-none focus:border-[#2563eb]" placeholder="输入名称、分组、IP、路径或文件名筛选…" value={searchText} onChange={event => setSearchText(event.target.value)} onKeyDown={event => { if (event.key === "Escape") setSearchText(""); }} />
@@ -317,11 +324,12 @@ export function ServerConfig({ view = "all" }: { view?: "all" | "connection" | "
           {visibleEntries.length === 0 && <div className="rounded-md border border-dashed border-[#d7dfeb] px-4 py-5 text-center text-xs text-[#7b889b]">暂无服务器配置，点击“日志路径配置”添加或导入。</div>}
           {visibleEntries.length > 0 && filteredEntries.length === 0 && <div className="py-5 text-center text-xs text-[#7b889b]">没有匹配的配置，试试其他关键词或<button type="button" className="ml-1 text-[#2563eb]" onClick={() => setSearchText("")}>清空筛选</button>。</div>}
         </div>
-        <p className="shrink-0 text-xs leading-5 text-[#7b889b]">勾选后可下载或查询日志；右键可打开服务器目录或设置别名（AI 可通过别名识别日志）。.gz 文件会自动解压。</p>
+        <p className="shrink-0 text-xs leading-5 text-[#7b889b]">勾选后可下载或查询日志；右键可编辑路径、打开服务器目录或设置别名（AI 可通过别名识别日志）。.gz 文件会自动解压。</p>
       </div>}
 
       {contextMenu && createPortal(<div ref={menuRef} role="menu" aria-label="服务器操作" className="fixed z-[100] min-w-[144px] rounded-md border border-[#d9e1ec] bg-white py-1 shadow-lg" style={{ left: contextMenu.x, top: contextMenu.y }}>
         <button role="menuitem" className="flex w-full items-center gap-2 px-3 py-2 text-xs text-[#243145] hover:bg-[#f0f4ff]" type="button" onClick={() => { void invoke("open_file", { path: contextMenu.dirUrl }); setContextMenu(null); }}><ExternalLink size={13} />跳转</button>
+        <button role="menuitem" className="flex w-full items-center gap-2 px-3 py-2 text-xs text-[#243145] hover:bg-[#f0f4ff]" type="button" onClick={() => openEntryEdit(contextMenu.entryId)}><Pencil size={13} />编辑路径</button>
         <button role="menuitem" className="flex w-full items-center gap-2 px-3 py-2 text-xs text-[#243145] hover:bg-[#f0f4ff]" type="button" onClick={() => openAliasEdit(contextMenu.entryId)}><Tag size={13} />设置别名</button>
       </div>, document.body)}
       {aliasEdit && createPortal(<div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/30" onPointerDown={event => { if (event.target === event.currentTarget) setAliasEdit(null); }}>
@@ -339,7 +347,17 @@ export function ServerConfig({ view = "all" }: { view?: "all" | "connection" | "
           </div>
         </form>
       </div>, document.body)}
-      {showModal && <LogPathModal onClose={() => setShowModal(false)} />}
+      {showModal && (
+        <LogPathModal
+          initialEditEntryId={editEntryId ?? undefined}
+          onClose={() => { setShowModal(false); setEditEntryId(null); }}
+          onSaved={(entryId) => setChecks((prev) => {
+            const next = { ...prev };
+            delete next[entryId];
+            return next;
+          })}
+        />
+      )}
     </section>
   );
 }

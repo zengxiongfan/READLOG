@@ -21,6 +21,13 @@ struct AgentStatus {
     installed: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiAgentStatus {
+    cli_path: String,
+    cli_found: bool,
+}
+
 #[tauri::command]
 async fn load_app_config() -> Result<AppConfig, AppError> {
     load_config().await
@@ -140,17 +147,30 @@ fn copy_agent_prompt(text: String) -> Result<(), AppError> {
 }
 
 /// readgcislog 命令行工具与主程序安装在同一目录。
-fn skill_cli_path() -> Result<std::path::PathBuf, AppError> {
+fn skill_cli_candidate() -> Result<std::path::PathBuf, AppError> {
     let exe = std::env::current_exe()?;
     let dir = exe
         .parent()
         .ok_or_else(|| AppError::NotFound("程序所在目录".to_string()))?;
     let name = if cfg!(windows) { "readgcislog.exe" } else { "readgcislog" };
-    let cli = dir.join(name);
+    Ok(dir.join(name))
+}
+
+fn skill_cli_path() -> Result<std::path::PathBuf, AppError> {
+    let cli = skill_cli_candidate()?;
     if !cli.is_file() {
         return Err(AppError::NotFound(format!("命令行工具 {}", cli.display())));
     }
     Ok(cli)
+}
+
+#[tauri::command]
+fn ai_agent_status() -> Result<AiAgentStatus, AppError> {
+    let cli = skill_cli_candidate()?;
+    Ok(AiAgentStatus {
+        cli_path: cli.display().to_string(),
+        cli_found: cli.is_file(),
+    })
 }
 
 #[tauri::command]
@@ -374,6 +394,7 @@ fn main() {
             check_agent_status,
             copy_agent_prompt,
             copy_skill_install_prompt,
+            ai_agent_status,
             open_file,
             open_folder,
             export_xlsx,

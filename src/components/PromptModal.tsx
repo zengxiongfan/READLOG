@@ -45,7 +45,7 @@ export function PromptModal({ filePath, onClose, onCopied }: Props) {
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#162033]/35" onClick={onClose}>
       <div className="flex max-h-[85vh] w-[680px] max-w-[92vw] flex-col rounded-lg border border-[#d9e0eb] bg-white shadow-xl" onClick={(event) => event.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-[#e3e8f0] px-5 py-4">
-          <h2 className="text-base font-semibold">复制提示词</h2>
+          <h2 className="text-base font-semibold">复制日志分析提示词</h2>
           <button className="rounded-md p-1.5 text-[#5d6b82] hover:bg-[#eef3f8]" type="button" onClick={onClose} aria-label="关闭">
             <X size={18} />
           </button>
@@ -53,7 +53,7 @@ export function PromptModal({ filePath, onClose, onCopied }: Props) {
 
         <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
           <label className="block text-sm font-medium">
-            提示词模板
+            日志分析提示词模板
             <span className="ml-2 text-xs font-normal text-[#69778c]">{FILE_PATH_PLACEHOLDER} 将替换为本次日志路径</span>
             <textarea
               className="mt-1 h-44 w-full resize-y rounded-md border border-[#cfd8e6] bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-[#2563eb]"
