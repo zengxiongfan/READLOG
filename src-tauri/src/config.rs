@@ -24,6 +24,9 @@ pub struct LogEntry {
     /// 用户给日志项起的别名，多个别名用逗号分隔，方便用自然语言指代。
     #[serde(default)]
     pub alias: String,
+    /// 关联的服务映射 id；为空时由 CLI 按「名称去掉 Pod IP」推导。
+    #[serde(default)]
+    pub service_id: String,
 }
 
 fn default_log_file() -> String {
@@ -51,6 +54,23 @@ pub struct AuthConfig {
     pub password: String,
 }
 
+/// 服务级配置：把日志项聚合到服务，并指向本地代码目录与各环境分支。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceProfile {
+    pub id: String,
+    pub name: String,
+    /// 服务级别名，多个用逗号分隔，供自然语言选择服务。
+    #[serde(default)]
+    pub aliases: String,
+    /// 代码目录：相对 code_root，或绝对路径；为空时回退为服务名。
+    #[serde(default)]
+    pub code_dir: String,
+    /// 环境 -> 分支，例如 {"SIT":"sit","UAT":"uat"}。
+    #[serde(default)]
+    pub branches: std::collections::HashMap<String, String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -61,6 +81,9 @@ pub struct Settings {
     pub download_path: String,
     #[serde(default = "default_agent_prompt_template")]
     pub agent_prompt_template: String,
+    /// 本地代码工作区根目录；服务代码目录相对此路径。
+    #[serde(default)]
+    pub code_root: String,
 }
 
 pub fn default_agent_prompt_template() -> String {
@@ -74,6 +97,8 @@ pub struct AppConfig {
     pub base_url: String,
     #[serde(default)]
     pub log_entries: Vec<LogEntry>,
+    #[serde(default)]
+    pub services: Vec<ServiceProfile>,
     #[serde(default)]
     pub credentials: AuthConfig,
     pub settings: Settings,
@@ -95,6 +120,7 @@ impl Default for AppConfig {
         Self {
             base_url: default_base_url(),
             log_entries: Vec::new(),
+            services: Vec::new(),
             credentials: AuthConfig::default(),
             settings: Settings {
                 max_concurrent_servers: 3,
@@ -102,6 +128,7 @@ impl Default for AppConfig {
                 default_level: "ALL".to_string(),
                 download_path: String::new(),
                 agent_prompt_template: default_agent_prompt_template(),
+                code_root: String::new(),
             },
             group_order: Vec::new(),
             entry_order: Default::default(),
@@ -151,6 +178,7 @@ async fn load_config_from_path(path: &Path) -> AppResult<AppConfig> {
                 group_id: String::new(),
                 group_name: String::new(),
                 alias: String::new(),
+                service_id: String::new(),
             });
         }
     }
@@ -298,7 +326,7 @@ mod tests {
             path: "/custom/node/".into(), log_file: "server.log.gz".into(),
             visible: true, enabled: false, display_order: 7,
             group_id: "custom-group".into(), group_name: "my-group".into(),
-            alias: "网关,gw".into(),
+            alias: "网关,gw".into(), service_id: String::new(),
         });
         super::save_config_to_path(config, &path).await.unwrap();
         let bytes = tokio::fs::read(&path).await.unwrap();

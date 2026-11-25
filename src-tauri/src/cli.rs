@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use async_compression::tokio::bufread::GzipDecoder;
 use futures_util::{stream, StreamExt};
-use read_log::config::{build_full_url, config_path, load_config, AppConfig, LogEntry};
+use read_log::config::{build_full_url, config_path, load_config, AppConfig, LogEntry, ServiceProfile};
+use serde::Serialize;
 use read_log::directory::{fetch_directory_entries, test_log_entry_connection};
 use read_log::error::{AppError, AppResult};
 use read_log::search::{LineSearcher, SearchMatchMode, SearchOptions};
@@ -30,6 +31,7 @@ const USAGE: &str = "readgcislog - 读取 GCIS 日志（账号和日志路径来
   readgcislog ls -e <日志项> [子目录]              列出日志项所在目录（查找归档文件）
   readgcislog cat -e <日志项> <文件相对路径> [--from 1] [--to 200]
                                                    按行号读取文件（.gz 自动解压）
+  readgcislog map [关键字...] [--json]             列出服务→日志环境→代码目录→分支映射
   readgcislog skill [--out <SKILL.md 路径>]        输出或写入 readgcislog skill 说明
 
 日志项选择（-e）：按 id、名称或别名精确匹配；否则按空格分隔的关键字匹配分组、名称、别名、路径（忽略大小写，需全部包含）。";
@@ -61,6 +63,7 @@ async fn run(args: Vec<String>) -> AppResult<()> {
         "grep" => cmd_grep(Parsed::parse(rest, &["-e", "--file", "--mode", "-C", "--max"], &["--case"])?).await,
         "ls" => cmd_ls(Parsed::parse(rest, &["-e"], &[])?).await,
         "cat" => cmd_cat(Parsed::parse(rest, &["-e", "--from", "--to"], &[])?).await,
+        "map" => cmd_map(Parsed::parse(rest, &[], &["--json"])?).await,
         "skill" => cmd_skill(Parsed::parse(rest, &["--out"], &[])?),
         "help" | "-h" | "--help" => {
             println!("{USAGE}");
@@ -136,17 +139,77 @@ async fn load_ready_config() -> AppResult<AppConfig> {
     Ok(config)
 }
 
-fn entry_haystack(entry: &LogEntry) -> String {
-    format!("{} {} {} {} {}", entry.group_name, entry.name, entry.alias, entry.path, entry.log_file).to_lowercase()
+fn split_aliases(value: &str) -> Vec<String> {
+    value
+        .split([',', '，', '、', ';', '；'])
+        .map(|alias| alias.trim().to_string())
+        .filter(|alias| !alias.is_empty())
+        .collect()
 }
 
 fn entry_aliases(entry: &LogEntry) -> Vec<String> {
-    entry
-        .alias
-        .split([',', '，', '、', ';', '；'])
-        .map(|alias| alias.trim().to_lowercase())
-        .filter(|alias| !alias.is_empty())
+    split_aliases(&entry.alias)
+        .into_iter()
+        .map(|alias| alias.to_lowercase())
         .collect()
+}
+
+fn service_aliases(profile: &ServiceProfile) -> Vec<String> {
+    split_aliases(&profile.aliases)
+        .into_iter()
+        .map(|alias| alias.to_lowercase())
+        .collect()
+}
+
+/// 去掉名称末尾的 Pod IP（例如 `cgis-web-claim-10.142.152.45` -> `cgis-web-claim`）。
+fn strip_pod_ip(name: &str) -> &str {
+    if let Some((head, last)) = name.rsplit_once('-') {
+        let parts: Vec<&str> = last.split('.').collect();
+        if parts.len() == 4 && parts.iter().all(|part| part.parse::<u8>().is_ok()) {
+            return head;
+        }
+    }
+    name
+}
+
+/// 日志项归属的服务：service_id 优先，否则按名称去掉 Pod IP 匹配服务名。
+fn service_of<'a>(config: &'a AppConfig, entry: &LogEntry) -> Option<&'a ServiceProfile> {
+    if !entry.service_id.is_empty() {
+        if let Some(profile) = config.services.iter().find(|profile| profile.id == entry.service_id) {
+            return Some(profile);
+        }
+    }
+    let service_name = strip_pod_ip(&entry.name).to_lowercase();
+    config
+        .services
+        .iter()
+        .find(|profile| profile.name.to_lowercase() == service_name)
+}
+
+/// 从分组名推导环境：SIT / UAT / STG / PROD，兼容 SIT-C1、UAT1-C1 这类分组。
+fn environment_of(group: &str) -> String {
+    let upper = group.trim().to_uppercase();
+    for env in ["SIT", "UAT", "STG", "PROD"] {
+        if upper.starts_with(env) {
+            return env.to_string();
+        }
+    }
+    group.trim().to_string()
+}
+
+fn entry_haystack(config: &AppConfig, entry: &LogEntry) -> String {
+    let mut haystack = format!(
+        "{} {} {} {} {}",
+        entry.group_name, entry.name, entry.alias, entry.path, entry.log_file
+    )
+    .to_lowercase();
+    if let Some(profile) = service_of(config, entry) {
+        haystack.push(' ');
+        haystack.push_str(&profile.name.to_lowercase());
+        haystack.push(' ');
+        haystack.push_str(&profile.aliases.to_lowercase());
+    }
+    haystack
 }
 
 fn select_entries<'a>(config: &'a AppConfig, selector: &str) -> Vec<&'a LogEntry> {
@@ -165,12 +228,25 @@ fn select_entries<'a>(config: &'a AppConfig, selector: &str) -> Vec<&'a LogEntry
     if !exact.is_empty() {
         return exact;
     }
+    // 服务名或服务别名精确匹配时，返回该服务的全部日志项。
+    let service_exact: Vec<&LogEntry> = config
+        .log_entries
+        .iter()
+        .filter(|entry| {
+            service_of(config, entry).is_some_and(|profile| {
+                profile.name.to_lowercase() == lower || service_aliases(profile).contains(&lower)
+            })
+        })
+        .collect();
+    if !service_exact.is_empty() {
+        return service_exact;
+    }
     let tokens: Vec<&str> = lower.split_whitespace().collect();
     config
         .log_entries
         .iter()
         .filter(|entry| {
-            let haystack = entry_haystack(entry);
+            let haystack = entry_haystack(config, entry);
             tokens.iter().all(|token| haystack.contains(token))
         })
         .collect()
@@ -633,6 +709,258 @@ async fn cmd_cat(parsed: Parsed) -> AppResult<()> {
     Ok(())
 }
 
+// ---------- 服务映射 ----------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MapOutput {
+    schema_version: u32,
+    generated_at: String,
+    code_root: String,
+    services: Vec<ServiceMapView>,
+    unmapped_entries: Vec<UnmappedEntry>,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceMapView {
+    id: String,
+    name: String,
+    aliases: Vec<String>,
+    code_dir: String,
+    code_dir_exists: bool,
+    status: String,
+    log_environments: Vec<String>,
+    branches: HashMap<String, String>,
+    entries: Vec<MapEntryView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MapEntryView {
+    group: String,
+    environment: String,
+    name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnmappedEntry {
+    name: String,
+    group: String,
+    reason: String,
+}
+
+fn resolve_code_dir(config: &AppConfig, profile: &ServiceProfile) -> (String, Option<std::path::PathBuf>) {
+    let dir = if profile.code_dir.trim().is_empty() {
+        profile.name.trim()
+    } else {
+        profile.code_dir.trim()
+    };
+    if dir.is_empty() {
+        return (String::new(), None);
+    }
+    let path = std::path::Path::new(dir);
+    if path.is_absolute() {
+        return (dir.to_string(), Some(path.to_path_buf()));
+    }
+    let root = config.settings.code_root.trim();
+    if root.is_empty() {
+        (dir.to_string(), None)
+    } else {
+        (dir.to_string(), Some(std::path::Path::new(root).join(dir)))
+    }
+}
+
+fn service_matches_filter(profile: &ServiceProfile, filter: &str) -> bool {
+    if filter.trim().is_empty() {
+        return true;
+    }
+    let haystack = format!("{} {}", profile.name, profile.aliases).to_lowercase();
+    filter
+        .to_lowercase()
+        .split_whitespace()
+        .all(|token| haystack.contains(token))
+}
+
+fn branch_for<'a>(branches: &'a HashMap<String, String>, env: &str) -> Option<&'a String> {
+    branches
+        .get(env)
+        .or_else(|| branches.iter().find(|(key, _)| key.eq_ignore_ascii_case(env)).map(|(_, value)| value))
+}
+
+fn build_map(config: &AppConfig, filter: &str) -> (Vec<ServiceMapView>, Vec<UnmappedEntry>, Vec<String>) {
+    let mut services = Vec::new();
+    let mut warnings = Vec::new();
+
+    for profile in config.services.iter().filter(|profile| service_matches_filter(profile, filter)) {
+        let mut entries: Vec<&LogEntry> = config
+            .log_entries
+            .iter()
+            .filter(|entry| service_of(config, entry).is_some_and(|matched| matched.id == profile.id))
+            .collect();
+        entries.sort_by(|left, right| {
+            (environment_of(&left.group_name), &left.name)
+                .cmp(&(environment_of(&right.group_name), &right.name))
+        });
+        let mut environments: Vec<String> = entries.iter().map(|entry| environment_of(&entry.group_name)).collect();
+        environments.sort();
+        environments.dedup();
+
+        let (code_dir, path) = resolve_code_dir(config, profile);
+        let exists = path.as_deref().is_some_and(|path| path.is_dir());
+        let status = if entries.is_empty() {
+            "noLogs"
+        } else if path.is_none() {
+            "missingCodeRoot"
+        } else if !exists {
+            "missingCodeDir"
+        } else {
+            "ok"
+        };
+
+        services.push(ServiceMapView {
+            id: profile.id.clone(),
+            name: profile.name.clone(),
+            aliases: split_aliases(&profile.aliases),
+            code_dir,
+            code_dir_exists: exists,
+            status: status.to_string(),
+            log_environments: environments,
+            branches: profile.branches.clone(),
+            entries: entries
+                .iter()
+                .map(|entry| MapEntryView {
+                    group: entry.group_name.clone(),
+                    environment: environment_of(&entry.group_name),
+                    name: entry.name.clone(),
+                })
+                .collect(),
+        });
+    }
+
+    let unmapped_entries: Vec<UnmappedEntry> = config
+        .log_entries
+        .iter()
+        .filter(|entry| service_of(config, entry).is_none())
+        .map(|entry| UnmappedEntry {
+            name: entry.name.clone(),
+            group: entry.group_name.clone(),
+            reason: "未匹配到服务".to_string(),
+        })
+        .collect();
+
+    if !unmapped_entries.is_empty() {
+        warnings.push(format!("{} 个日志项未关联服务", unmapped_entries.len()));
+    }
+    let root = config.settings.code_root.trim();
+    if root.is_empty()
+        && config.services.iter().any(|profile| {
+            let dir = if profile.code_dir.trim().is_empty() { profile.name.trim() } else { profile.code_dir.trim() };
+            !dir.is_empty() && !std::path::Path::new(dir).is_absolute()
+        })
+    {
+        warnings.push("未配置代码根，相对代码目录无法校验".to_string());
+    } else if !root.is_empty() && !std::path::Path::new(root).is_dir() {
+        warnings.push(format!("代码根不存在：{root}"));
+    }
+
+    let mut alias_owners: HashMap<String, Vec<String>> = HashMap::new();
+    for profile in &config.services {
+        for alias in split_aliases(&profile.aliases) {
+            alias_owners.entry(alias.to_lowercase()).or_default().push(profile.name.clone());
+        }
+    }
+    let mut duplicate_aliases: Vec<String> = alias_owners
+        .into_iter()
+        .filter(|(_, owners)| owners.len() > 1)
+        .map(|(alias, owners)| format!("别名「{alias}」同时属于 {}", owners.join("、")))
+        .collect();
+    duplicate_aliases.sort();
+    warnings.extend(duplicate_aliases);
+
+    (services, unmapped_entries, warnings)
+}
+
+fn status_text(status: &str) -> &'static str {
+    match status {
+        "ok" => "OK",
+        "noLogs" => "无日志项",
+        "missingCodeRoot" => "未配置代码根",
+        "missingCodeDir" => "目录不存在",
+        _ => "未知",
+    }
+}
+
+fn print_map_human(config: &AppConfig, services: &[ServiceMapView], unmapped: &[UnmappedEntry], warnings: &[String]) {
+    let root = config.settings.code_root.trim();
+    let root_status = if root.is_empty() {
+        "未配置"
+    } else if std::path::Path::new(root).is_dir() {
+        "存在"
+    } else {
+        "不存在"
+    };
+    println!("代码根：{}（{}）", if root.is_empty() { "-" } else { root }, root_status);
+    println!("共 {} 个服务", services.len());
+    println!("服务 | 别名 | 日志环境 | 日志项 | 代码目录 | 分支(SIT/UAT/STG) | 状态");
+    for service in services {
+        let environments = if service.log_environments.is_empty() {
+            "-".to_string()
+        } else {
+            service.log_environments.join("、")
+        };
+        let branches = ["SIT", "UAT", "STG"]
+            .iter()
+            .map(|env| branch_for(&service.branches, env).map(String::as_str).unwrap_or("-"))
+            .collect::<Vec<_>>()
+            .join(" / ");
+        let aliases = if service.aliases.is_empty() {
+            "-".to_string()
+        } else {
+            service.aliases.join("、")
+        };
+        println!(
+            "{} | {} | {} | {} | {} | {} | {}",
+            service.name,
+            aliases,
+            environments,
+            service.entries.len(),
+            if service.code_dir.is_empty() { "-" } else { &service.code_dir },
+            branches,
+            status_text(&service.status)
+        );
+    }
+    println!("未关联服务的日志项：{}", unmapped.len());
+    for entry in unmapped {
+        println!("  {} | {} | {}", entry.name, entry.group, entry.reason);
+    }
+    for warning in warnings {
+        println!("警告：{warning}");
+    }
+}
+
+async fn cmd_map(parsed: Parsed) -> AppResult<()> {
+    let config = load_config().await?;
+    let filter = parsed.positional.join(" ");
+    let (services, unmapped_entries, warnings) = build_map(&config, &filter);
+    if parsed.has("--json") {
+        let output = MapOutput {
+            schema_version: 1,
+            generated_at: chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+            code_root: config.settings.code_root.trim().to_string(),
+            services,
+            unmapped_entries,
+            warnings,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+    print_map_human(&config, &services, &unmapped_entries, &warnings);
+    Ok(())
+}
+
 fn cmd_skill(parsed: Parsed) -> AppResult<()> {
     let exe = std::env::current_exe()?;
     let content = skill_document(&exe);
@@ -788,6 +1116,7 @@ mod tests {
             group_id: group.into(),
             group_name: group.into(),
             alias: alias.into(),
+            service_id: String::new(),
         }
     }
 
@@ -834,5 +1163,60 @@ mod tests {
             resolve_relative(&config, entry, "app.2026-05-06-18.log.gz").unwrap(),
             "http://logs.test/logs/SIT-C1/cgis-web-gateway-10.0.0.1/app.2026-05-06-18.log.gz"
         );
+    }
+
+    fn service(id: &str, name: &str, aliases: &str) -> ServiceProfile {
+        ServiceProfile {
+            id: id.into(),
+            name: name.into(),
+            aliases: aliases.into(),
+            code_dir: name.into(),
+            branches: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn service_alias_selects_all_environments_and_combines_with_environment_token() {
+        let mut config = sample();
+        config.services = vec![service("gw", "cgis-web-gateway", "网关,gw")];
+        assert_eq!(ids(select_entries(&config, "网关")), vec!["1", "2"]);
+        assert_eq!(ids(select_entries(&config, "SIT 网关")), vec!["1"]);
+    }
+
+    #[test]
+    fn strips_pod_ip_and_derives_environment() {
+        assert_eq!(strip_pod_ip("cgis-web-claim-10.142.152.45"), "cgis-web-claim");
+        assert_eq!(strip_pod_ip("cgis-web-claim"), "cgis-web-claim");
+        assert_eq!(strip_pod_ip("cgis-legacy-app-10.142.152.29"), "cgis-legacy-app");
+        assert_eq!(environment_of("SIT"), "SIT");
+        assert_eq!(environment_of("SIT-C1"), "SIT");
+        assert_eq!(environment_of("UAT1-C1"), "UAT");
+    }
+
+    #[test]
+    fn map_groups_services_and_marks_unmapped_entries() {
+        let mut config = sample();
+        config.services = vec![service("gw", "cgis-web-gateway", "网关")];
+        let (services, unmapped, _) = build_map(&config, "");
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].entries.len(), 2);
+        assert_eq!(services[0].log_environments, vec!["SIT", "UAT"]);
+        assert_eq!(services[0].status, "missingCodeRoot");
+        assert_eq!(unmapped.len(), 1);
+        assert_eq!(unmapped[0].name, "cgis-web-claim-10.0.0.3");
+    }
+
+    #[test]
+    fn map_reports_existing_code_dir_and_branch_lookup() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("cgis-web-gateway")).unwrap();
+        let mut config = sample();
+        config.settings.code_root = directory.path().to_string_lossy().to_string();
+        config.services = vec![service("gw", "cgis-web-gateway", "网关")];
+        config.services[0].branches.insert("SIT".into(), "sit".into());
+        let (services, _, _) = build_map(&config, "");
+        assert_eq!(services[0].status, "ok");
+        assert!(services[0].code_dir_exists);
+        assert_eq!(branch_for(&services[0].branches, "sit").map(String::as_str), Some("sit"));
     }
 }

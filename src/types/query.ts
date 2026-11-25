@@ -28,6 +28,17 @@ export interface QueryResultEvent {
   isLastBatch: boolean;
 }
 
+export interface ServiceProfile {
+  id: string;
+  name: string;
+  /** 服务级别名，多个用逗号分隔 */
+  aliases?: string;
+  /** 代码目录：相对 codeRoot，或绝对路径；为空时回退为服务名 */
+  codeDir?: string;
+  /** 环境 -> 分支，例如 { SIT: "sit", UAT: "uat" } */
+  branches?: Record<string, string>;
+}
+
 export interface LogEntry {
   id: string;
   name: string;
@@ -40,6 +51,8 @@ export interface LogEntry {
   groupName: string;
   /** 别名，多个用逗号分隔 */
   alias?: string;
+  /** 关联的服务映射 id；为空时按名称去掉 Pod IP 推导 */
+  serviceId?: string;
 }
 
 export interface ServerConfig {
@@ -53,6 +66,7 @@ export interface ServerConfig {
 export interface AppConfig {
   baseUrl: string;
   logEntries: LogEntry[];
+  services: ServiceProfile[];
   credentials: {
     username: string;
     password: string;
@@ -65,6 +79,8 @@ export interface AppConfig {
     defaultLevel: LogLevel;
     downloadPath: string;
     agentPromptTemplate: string;
+    /** 本地代码工作区根目录 */
+    codeRoot: string;
   };
 }
 

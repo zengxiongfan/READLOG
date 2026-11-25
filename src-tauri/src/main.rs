@@ -376,6 +376,21 @@ async fn download_selected_archive_files(
     do_download_selected_archive_files(&config.credentials, file_urls, effective_path).await
 }
 
+#[tauri::command]
+fn path_is_dir(path: String) -> bool {
+    !path.trim().is_empty() && std::path::Path::new(path.trim()).is_dir()
+}
+
+#[tauri::command]
+fn export_services_json(output_path: String, content: String) -> Result<(), AppError> {
+    let path = std::path::Path::new(&output_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(SearchRegistry::default())
@@ -399,6 +414,8 @@ fn main() {
             open_folder,
             export_xlsx,
             pick_directory,
+            path_is_dir,
+            export_services_json,
             read_log::search::search_log_files,
             read_log::search::search_archive_files,
             read_log::search::cancel_log_search

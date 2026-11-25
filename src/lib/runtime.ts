@@ -12,6 +12,7 @@ export function isTauriRuntime() {
 const emptyConfig: AppConfig = {
   baseUrl: "",
   logEntries: [],
+  services: [],
   credentials: { username: "", password: "" },
   groupOrder: [],
   entryOrder: {},
@@ -21,6 +22,7 @@ const emptyConfig: AppConfig = {
     defaultLevel: "ALL",
     downloadPath: "",
     agentPromptTemplate: DEFAULT_AGENT_PROMPT,
+    codeRoot: "",
   },
 };
 
@@ -34,6 +36,7 @@ function readBrowserConfig() {
       ...parsed,
       credentials: { ...emptyConfig.credentials, ...parsed.credentials },
       settings: { ...emptyConfig.settings, ...parsed.settings },
+      services: parsed.services ?? [],
       groupOrder: parsed.groupOrder ?? [],
       entryOrder: parsed.entryOrder ?? {},
     };
@@ -83,6 +86,8 @@ export async function invoke<T>(command: string, args?: Record<string, unknown>)
         bytesWritten: 8 * 1024 * 1024,
         outputPath: String(args?.outputPath ?? "") || "C:\\Users\\Public\\Downloads\\readlog-preview\\app.log",
       } satisfies DownloadSummary as T;
+    case "path_is_dir":
+      return Boolean(String(args?.path ?? "").trim()) as T;
     case "list_archive_files":
       return [
         { name: "archive", url: "browser-preview://archive/", isDir: true },
@@ -102,7 +107,10 @@ export async function invoke<T>(command: string, args?: Record<string, unknown>)
   }
 }
 
-export async function saveDialog(options: { defaultPath?: string }) {
+export async function saveDialog(options: {
+  defaultPath?: string;
+  filters?: { name: string; extensions: string[] }[];
+}) {
   if (isTauriRuntime()) {
     return tauriSave(options);
   }
@@ -150,14 +158,14 @@ export async function exportXlsx(entries: LogEntry[]): Promise<void> {
   XLSX.writeFile(wb, "日志路径配置.xlsx");
 }
 
-export async function pickDirectory(): Promise<string | null> {
+export async function pickDirectory(title = "选择下载目录"): Promise<string | null> {
   if (isTauriRuntime()) {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
-      const result = await open({ directory: true, title: "选择下载目录" });
-      if (result) return result;
+      // 用户取消时返回 null，直接结束；只有弹窗本身失败才回退到旧命令。
+      return await open({ directory: true, title });
     } catch {
-      // Fallback to backend command
+      // Fallback to backend command only when the plugin dialog fails.
     }
     try {
       return await tauriInvoke<string | null>("pick_directory");

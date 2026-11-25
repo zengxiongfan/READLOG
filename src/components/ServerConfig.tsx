@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, ChevronRight, ExternalLink, Eye, EyeOff, GripVertical, Pencil, PlugZap, RotateCcw, Save, Search, Settings, Tag, X, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, ExternalLink, Eye, EyeOff, FolderGit2, GripVertical, Pencil, PlugZap, RotateCcw, Save, Search, Settings, Tag, X, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "../lib/runtime";
@@ -6,6 +6,7 @@ import { groupLogEntries, matchesLogEntry, normalizeAlias, sortLogEntries } from
 import { useServerStore } from "../store/serverStore";
 import type { ConnectionCheckResult, LogEntry } from "../types/query";
 import { LogPathModal } from "./LogPathModal";
+import { ServiceMapModal } from "./ServiceMapModal";
 
 type CheckState = Record<string, { loading: boolean; result?: ConnectionCheckResult; error?: string }>;
 type ContextMenuState = { x: number; y: number; dirUrl: string; entryId: string } | null;
@@ -16,6 +17,7 @@ type DropTarget = { kind: "group" | "entry"; id: string; position: "before" | "a
 export function ServerConfig({ view = "all" }: { view?: "all" | "connection" | "scope" }) {
   const { config, toggleLogEntry, toggleLogEntries, save, upsertLogEntry, saveGroupOrder, saveEntryOrder, resetEntryOrder } = useServerStore();
   const [showModal, setShowModal] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [authDraft, setAuthDraft] = useState({ username: "", password: "" });
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
@@ -258,6 +260,7 @@ export function ServerConfig({ view = "all" }: { view?: "all" | "connection" | "
       {view !== "connection" && <div className={view === "all" ? "flex min-h-0 flex-1 flex-col gap-2.5" : "space-y-2.5"}>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           <button className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[#cfd8e6] bg-[#f8fafc] px-3 py-2 text-xs font-medium text-[#607086] hover:bg-[#eef3f8]" type="button" onClick={() => { setEditEntryId(null); setShowModal(true); }}><Settings size={14} />日志路径配置</button>
+          <button className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[#bfdbfe] bg-[#eff6ff] px-3 py-2 text-xs font-medium text-[#1d4ed8] hover:bg-[#dbeafe]" type="button" onClick={() => setMapOpen(true)}><FolderGit2 size={14} />服务与代码映射</button>
           <div className="relative min-w-[180px] flex-1">
             <Search size={14} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[#94a3b8]" />
             <input type="search" aria-label="筛选服务器配置" className="server-filter w-full rounded-md border border-[#cfd8e6] bg-white py-2 pl-8 pr-8 text-xs outline-none focus:border-[#2563eb]" placeholder="输入名称、分组、IP、路径或文件名筛选…" value={searchText} onChange={event => setSearchText(event.target.value)} onKeyDown={event => { if (event.key === "Escape") setSearchText(""); }} />
@@ -358,6 +361,7 @@ export function ServerConfig({ view = "all" }: { view?: "all" | "connection" | "
           })}
         />
       )}
+      {mapOpen && <ServiceMapModal onClose={() => setMapOpen(false)} />}
     </section>
   );
 }

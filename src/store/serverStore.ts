@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "../lib/runtime";
-import type { AppConfig, LogEntry } from "../types/query";
+import type { AppConfig, LogEntry, ServiceProfile } from "../types/query";
 
 interface ServerState {
   config: AppConfig | null;
@@ -20,6 +20,9 @@ interface ServerState {
   saveGroupOrder: (ids: string[]) => Promise<void>;
   saveEntryOrder: (groupId: string, ids: string[]) => Promise<void>;
   resetEntryOrder: () => Promise<void>;
+  upsertService: (profile: ServiceProfile) => Promise<void>;
+  deleteService: (serviceId: string) => Promise<void>;
+  saveServices: (services: ServiceProfile[]) => Promise<void>;
 }
 
 // Keep rapid manual selections responsive while writing snapshots in order.
@@ -160,5 +163,25 @@ export const useServerStore = create<ServerState>((set, get) => ({
     const config = get().config;
     if (!config) return;
     await get().save({ ...config, groupOrder: [], entryOrder: {} });
+  },
+  upsertService: async (profile) => {
+    const config = get().config;
+    if (!config) return;
+    const services = config.services ?? [];
+    const exists = services.some((item) => item.id === profile.id);
+    const next = exists
+      ? services.map((item) => (item.id === profile.id ? profile : item))
+      : [...services, profile];
+    await get().save({ ...config, services: next });
+  },
+  deleteService: async (serviceId) => {
+    const config = get().config;
+    if (!config) return;
+    await get().save({ ...config, services: (config.services ?? []).filter((item) => item.id !== serviceId) });
+  },
+  saveServices: async (services) => {
+    const config = get().config;
+    if (!config) return;
+    await get().save({ ...config, services });
   },
 }));

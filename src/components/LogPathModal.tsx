@@ -157,6 +157,7 @@ export function LogPathModal({ onClose, initialEditEntryId, onSaved }: Props) {
       groupId: draft.groupId,
       groupName: draft.groupName,
       alias: existing?.alias ?? "",
+      serviceId: existing?.serviceId ?? "",
     };
     await upsertLogEntry(entry);
     onSaved?.(entry.id);
