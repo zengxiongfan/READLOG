@@ -27,9 +27,7 @@ pub async fn download_realtime_logs(
     output_path: &str,
 ) -> AppResult<DownloadSummary> {
     let password = crate::crypto::reveal_password(&credentials.password)?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()?;
+    let client = crate::http::stream_client()?;
 
     let mut total_bytes = 0_u64;
     let mut first_output = String::new();
@@ -92,9 +90,7 @@ pub async fn download_archive_logs(
     let filename = format!("{log_type}_archive_{month}-{day}_{hour_start:02}h-{hour_end:02}h.log");
     let base_output_path = resolve_archive_output_path(output_path, &filename)?;
     let password = crate::crypto::reveal_password(&credentials.password)?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?;
+    let client = crate::http::stream_client()?;
     if let Some(parent) = base_output_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -226,9 +222,7 @@ pub async fn download_tail_logs(
     output_path: &str,
 ) -> AppResult<DownloadSummary> {
     let password = crate::crypto::reveal_password(&credentials.password)?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()?;
+    let client = crate::http::stream_client()?;
 
     let mut total_bytes = 0_u64;
     let mut first_output = String::new();
@@ -324,7 +318,7 @@ pub async fn download_raw_file(
 ) -> AppResult<()> {
     let url = Url::parse(base_url)?.join(file_path)?;
     let password = crate::crypto::reveal_password(&credentials.password)?;
-    let response = reqwest::Client::new()
+    let response = crate::http::stream_client()?
         .get(url)
         .basic_auth(&credentials.username, Some(password))
         .send()
@@ -382,9 +376,7 @@ pub async fn download_selected_archive_files(
     output_path: &str,
 ) -> AppResult<DownloadSummary> {
     let password = crate::crypto::reveal_password(&credentials.password)?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?;
+    let client = crate::http::stream_client()?;
 
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let base_output_path = resolve_archive_output_path(output_path, &format!("archive_selected_{stamp}.log"))?;

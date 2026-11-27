@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Write};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use async_compression::tokio::bufread::GzipDecoder;
 use futures_util::{stream, StreamExt};
@@ -25,16 +25,20 @@ const USAGE: &str = "readgcislog - 读取 GCIS 日志（账号和日志路径来
 用法:
   readgcislog entries [关键字...]                 列出已配置的日志项
   readgcislog check [-e 日志项]                    检查配置和连接
-  readgcislog tail -e <日志项> [-n 200]            读取当前日志末尾 N 行
-  readgcislog grep <关键字> [-e 日志项]... [--file 相对路径]... [--mode phrase|all|any] [-C 3] [--max 50] [--case]
+  readgcislog tail -e <日志项> [-n 200] [--max-line-chars N | --full-line]
+                                                   读取当前日志末尾 N 行
+  readgcislog grep <关键字> [-e 日志项]... [--file 相对路径]... [--mode phrase|all|any] [-C 3] [--max 50] [--case] [--max-line-chars N | --full-line]
                                                    按文件完成顺序输出，默认搜索全部日志项的当前日志；有读取失败时退出码为 1
   readgcislog ls -e <日志项> [子目录]              列出日志项所在目录（查找归档文件）
-  readgcislog cat -e <日志项> <文件相对路径> [--from 1] [--to 200]
+  readgcislog cat -e <日志项> <文件相对路径> [--from 1] [--to 200] [--max-line-chars N | --full-line]
                                                    按行号读取文件（.gz 自动解压）
   readgcislog map [关键字...] [--json]             列出服务→日志环境→代码目录→分支映射
   readgcislog skill [--out <SKILL.md 路径>]        输出或写入 readgcislog skill 说明
 
-日志项选择（-e）：按 id、名称或别名精确匹配；否则按空格分隔的关键字匹配分组、名称、别名、路径（忽略大小写，需全部包含）。";
+日志项选择（-e）：按 id、名称或别名精确匹配；否则按空格分隔的关键字匹配分组、名称、别名、路径（忽略大小写，需全部包含）。
+
+单行默认最多显示 2000 字符，超出会标注“本行过长已截断，共 N 字符”；
+grep 命中行围绕命中位置显示。需要完整行时使用 --full-line 或 --max-line-chars 0。";
 
 #[tokio::main]
 async fn main() {
@@ -59,10 +63,10 @@ async fn run(args: Vec<String>) -> AppResult<()> {
     match command.as_str() {
         "entries" => cmd_entries(Parsed::parse(rest, &[], &[])?).await,
         "check" => cmd_check(Parsed::parse(rest, &["-e"], &[])?).await,
-        "tail" => cmd_tail(Parsed::parse(rest, &["-e", "-n"], &[])?).await,
-        "grep" => cmd_grep(Parsed::parse(rest, &["-e", "--file", "--mode", "-C", "--max"], &["--case"])?).await,
+        "tail" => cmd_tail(Parsed::parse(rest, &["-e", "-n", "--max-line-chars"], &["--full-line"])?).await,
+        "grep" => cmd_grep(Parsed::parse(rest, &["-e", "--file", "--mode", "-C", "--max", "--max-line-chars"], &["--case", "--full-line"])?).await,
         "ls" => cmd_ls(Parsed::parse(rest, &["-e"], &[])?).await,
-        "cat" => cmd_cat(Parsed::parse(rest, &["-e", "--from", "--to"], &[])?).await,
+        "cat" => cmd_cat(Parsed::parse(rest, &["-e", "--from", "--to", "--max-line-chars"], &["--full-line"])?).await,
         "map" => cmd_map(Parsed::parse(rest, &[], &["--json"])?).await,
         "skill" => cmd_skill(Parsed::parse(rest, &["--out"], &[])?),
         "help" | "-h" | "--help" => {
@@ -310,7 +314,7 @@ fn file_name_of(url: &str) -> String {
 // ---------- HTTP 按行读取 ----------
 
 fn http_client() -> AppResult<reqwest::Client> {
-    Ok(reqwest::Client::builder().timeout(Duration::from_secs(300)).build()?)
+    read_log::http::stream_client()
 }
 
 struct ReadInfo {
@@ -400,13 +404,87 @@ async fn scan_lines(
     Ok(true)
 }
 
-fn clip(line: &str) -> String {
-    let count = line.chars().count();
-    if count <= MAX_LINE_CHARS {
-        return line.to_string();
+#[derive(Clone, Copy)]
+struct LineDisplay {
+    max_chars: Option<usize>,
+}
+
+impl Default for LineDisplay {
+    fn default() -> Self {
+        Self { max_chars: Some(MAX_LINE_CHARS) }
     }
-    let head: String = line.chars().take(MAX_LINE_CHARS).collect();
-    format!("{head} …（本行过长已截断，共 {count} 字符）")
+}
+
+impl LineDisplay {
+    fn from_parsed(parsed: &Parsed, default: usize) -> AppResult<Self> {
+        if parsed.has("--full-line") {
+            return Ok(Self { max_chars: None });
+        }
+        let max = parsed.number("--max-line-chars", default)?;
+        Ok(Self { max_chars: (max > 0).then_some(max) })
+    }
+
+    fn clip_head(&self, line: &str) -> String {
+        let Some(max) = self.max_chars else { return line.to_string(); };
+        let total = line.chars().count();
+        if total <= max {
+            return line.to_string();
+        }
+        let head: String = line.chars().take(max).collect();
+        format!("{head} …（本行过长已截断，共 {total} 字符）")
+    }
+
+    fn clip_around(&self, line: &str, match_char: Option<usize>) -> String {
+        let Some(max) = self.max_chars else { return line.to_string(); };
+        let total = line.chars().count();
+        if total <= max {
+            return line.to_string();
+        }
+        let Some(match_char) = match_char else { return self.clip_head(line); };
+        let before = (max * 3 / 10).max(1);
+        let mut start = match_char.saturating_sub(before);
+        let mut end = (start + max).min(total);
+        if end == total {
+            start = end.saturating_sub(max);
+        }
+        if match_char < start {
+            start = match_char.saturating_sub(before);
+            end = (start + max).min(total);
+        }
+        if match_char >= end {
+            end = (match_char + 1).min(total);
+            start = end.saturating_sub(max);
+        }
+        let window: String = line.chars().skip(start).take(end - start).collect();
+        let prefix = if start > 0 { "…" } else { "" };
+        let note = if start > 0 || end < total {
+            format!("…（本行过长已截断，共 {total} 字符）")
+        } else {
+            String::new()
+        };
+        format!("{prefix}{window}{note}")
+    }
+}
+
+fn first_match_char_index(line: &str, keyword: &str, mode: SearchMatchMode, case_sensitive: bool) -> Option<usize> {
+    let hay = if case_sensitive { line.to_string() } else { line.to_lowercase() };
+    let needles: Vec<String> = match mode {
+        SearchMatchMode::Phrase => vec![keyword.trim().to_string()],
+        SearchMatchMode::All | SearchMatchMode::Any => keyword.split_whitespace().map(str::to_string).collect(),
+    };
+    needles.into_iter().filter_map(|needle| {
+        let needle = if case_sensitive { needle } else { needle.to_lowercase() };
+        if needle.is_empty() {
+            return None;
+        }
+        hay.find(&needle).map(|byte_index| {
+            let mut boundary = byte_index.min(line.len());
+            while boundary > 0 && !line.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            line[..boundary].chars().count()
+        })
+    }).min()
 }
 
 // ---------- 命令 ----------
@@ -464,6 +542,7 @@ async fn cmd_tail(parsed: Parsed) -> AppResult<()> {
         return Err(AppError::Message("请用 -e 指定日志项".to_string()));
     }
     let count = parsed.number("-n", 200)?.clamp(1, MAX_TAIL_LINES);
+    let display = LineDisplay::from_parsed(&parsed, MAX_LINE_CHARS)?;
     let client = http_client()?;
     let mut failures = 0;
     for entry in entries {
@@ -472,7 +551,7 @@ async fn cmd_tail(parsed: Parsed) -> AppResult<()> {
         match tail_lines(&client, &config, &url, count).await {
             Ok((lines, includes_start)) => {
                 for line in &lines {
-                    println!("{}", clip(line));
+                    println!("{}", display.clip_head(line));
                 }
                 let coverage = if includes_start { "包含文件开头" } else { "不包含文件开头，仅尾部样本" };
                 println!("（实际返回 {} 行，{coverage}）", lines.len());
@@ -532,6 +611,7 @@ async fn cmd_grep(parsed: Parsed) -> AppResult<()> {
         detail_context_lines: 0,
         max_results,
     };
+    let display = LineDisplay::from_parsed(&parsed, MAX_LINE_CHARS)?;
 
     let config = load_ready_config().await?;
     let entries = select_many(&config, &parsed.all("-e"))?;
@@ -552,7 +632,7 @@ async fn cmd_grep(parsed: Parsed) -> AppResult<()> {
     output.flush()?;
     let client = http_client()?;
     let concurrency = config.settings.max_concurrent_servers.max(4);
-    write_grep_results(&client, &config, targets, &options, concurrency, &mut output).await
+    write_grep_results(&client, &config, targets, &options, &display, concurrency, &mut output).await
 }
 
 async fn write_grep_results(
@@ -560,13 +640,15 @@ async fn write_grep_results(
     config: &AppConfig,
     targets: Vec<(&LogEntry, String)>,
     options: &SearchOptions,
+    display: &LineDisplay,
     concurrency: usize,
     output: &mut impl Write,
 ) -> AppResult<()> {
     let mut results = stream::iter(targets)
         .map(|(entry, url)| {
             let options = options.clone();
-            async move { grep_file(client, config, entry, &url, options).await }
+            let display = *display;
+            async move { grep_file(client, config, entry, &url, options, &display).await }
         })
         .buffer_unordered(concurrency);
 
@@ -611,8 +693,12 @@ async fn grep_file(
     entry: &LogEntry,
     url: &str,
     options: SearchOptions,
+    display: &LineDisplay,
 ) -> GrepReport {
     let started = Instant::now();
+    let keyword = options.keyword.clone();
+    let match_mode = options.match_mode;
+    let case_sensitive = options.case_sensitive;
     let mut searcher = LineSearcher::new(options);
     let mut hits = Vec::new();
     let mut stats = ReadStats::default();
@@ -637,11 +723,12 @@ async fn grep_file(
     for hit in &hits {
         let first = hit.line_number - hit.preview_before_lines.len();
         for (index, line) in hit.preview_before_lines.iter().enumerate() {
-            out.push_str(&format!("{}- {}\n", first + index, clip(line)));
+            out.push_str(&format!("{}- {}\n", first + index, display.clip_head(line)));
         }
-        out.push_str(&format!("{}: {}\n", hit.line_number, clip(&hit.matched_line)));
+        let match_index = first_match_char_index(&hit.matched_line, &keyword, match_mode, case_sensitive);
+        out.push_str(&format!("{}: {}\n", hit.line_number, display.clip_around(&hit.matched_line, match_index)));
         for (index, line) in hit.preview_after_lines.iter().enumerate() {
-            out.push_str(&format!("{}- {}\n", hit.line_number + 1 + index, clip(line)));
+            out.push_str(&format!("{}- {}\n", hit.line_number + 1 + index, display.clip_head(line)));
         }
         out.push_str("--\n");
     }
@@ -691,6 +778,7 @@ async fn cmd_cat(parsed: Parsed) -> AppResult<()> {
     let from = parsed.number("--from", 1)?.max(1);
     let to = parsed.number("--to", from + 199)?.max(from);
     let to = to.min(from + MAX_CAT_SPAN - 1);
+    let display = LineDisplay::from_parsed(&parsed, MAX_LINE_CHARS)?;
 
     println!("===== {} | {} | 第 {from}-{to} 行 =====", entry.name, url);
     let client = http_client()?;
@@ -698,7 +786,7 @@ async fn cmd_cat(parsed: Parsed) -> AppResult<()> {
     let info = for_each_line(&client, &config, &url, None, &mut ReadStats::default(), |line| {
         number += 1;
         if number >= from {
-            println!("{number}: {}", clip(line));
+            println!("{number}: {}", display.clip_head(line));
         }
         number < to
     })
@@ -981,6 +1069,7 @@ fn cmd_skill(parsed: Parsed) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use flate2::{write::GzEncoder, Compression};
     use tokio::{io::AsyncWriteExt, net::TcpListener, sync::oneshot, time::timeout};
 
@@ -1043,7 +1132,7 @@ mod tests {
         let headers = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", received + remaining.len());
         let url = serve_once("/archive.log.gz", &headers, first, Some((remaining, hold))).await;
 
-        let report = timeout(Duration::from_secs(5), grep_file(&http_client().unwrap(), &config, &config.log_entries[0], &url, grep_options(1)))
+        let report = timeout(Duration::from_secs(5), grep_file(&http_client().unwrap(), &config, &config.log_entries[0], &url, grep_options(1), &LineDisplay::default()))
             .await.unwrap();
         assert_eq!(report.status, GrepStatus::Limited);
         assert!(report.text.contains("1- before\n2: ERROR hit\n3- after"));
@@ -1078,7 +1167,7 @@ mod tests {
         let targets = vec![(&config.log_entries[0], slow), (&config.log_entries[0], fast)];
         let mut output = ReleaseOnFlush { bytes: Vec::new(), release: Some(release) };
 
-        let result = timeout(Duration::from_secs(5), write_grep_results(&http_client().unwrap(), &config, targets, &grep_options(50), 2, &mut output))
+        let result = timeout(Duration::from_secs(5), write_grep_results(&http_client().unwrap(), &config, targets, &grep_options(50), &LineDisplay::default(), 2, &mut output))
             .await.unwrap();
         assert!(result.is_err());
         let text = String::from_utf8(output.bytes).unwrap();
@@ -1218,5 +1307,49 @@ mod tests {
         assert_eq!(services[0].status, "ok");
         assert!(services[0].code_dir_exists);
         assert_eq!(branch_for(&services[0].branches, "sit").map(String::as_str), Some("sit"));
+    }
+
+    #[test]
+    fn clip_head_reports_total_length() {
+        let display = LineDisplay { max_chars: Some(20) };
+        let line = "x".repeat(25);
+        let clipped = display.clip_head(&line);
+        assert!(clipped.starts_with(&"x".repeat(20)));
+        assert!(clipped.contains("共 25 字符"));
+    }
+
+    #[test]
+    fn clip_around_keeps_match_after_default_limit() {
+        let line = format!("{}JOIN target{}", "a".repeat(5350), "b".repeat(1700));
+        let total = line.chars().count();
+        let display = LineDisplay { max_chars: Some(MAX_LINE_CHARS) };
+        let match_index = first_match_char_index(&line, "JOIN", SearchMatchMode::Phrase, true);
+        let clipped = display.clip_around(&line, match_index);
+        assert!(clipped.contains("JOIN target"));
+        assert!(clipped.contains(&format!("共 {total} 字符")));
+        assert!(clipped.chars().count() < total);
+    }
+
+    #[test]
+    fn first_match_index_supports_any_mode_and_case_insensitive() {
+        let line = "first ERROR then JOIN value";
+        let index = first_match_char_index(line, "join Value", SearchMatchMode::Any, false).unwrap();
+        assert_eq!(line.chars().take(index).collect::<String>(), "first ERROR then ");
+    }
+
+    #[test]
+    fn full_line_disables_clipping() {
+        let parsed = Parsed::parse(vec!["--full-line".into()], &["--max-line-chars"], &["--full-line"]).unwrap();
+        let display = LineDisplay::from_parsed(&parsed, MAX_LINE_CHARS).unwrap();
+        let line = "x".repeat(5000);
+        assert_eq!(display.clip_head(&line), line);
+        assert_eq!(display.clip_around(&line, Some(4500)), line);
+    }
+
+    #[test]
+    fn max_line_chars_zero_disables_clipping() {
+        let parsed = Parsed::parse(vec!["--max-line-chars".into(), "0".into()], &["--max-line-chars"], &["--full-line"]).unwrap();
+        let display = LineDisplay::from_parsed(&parsed, MAX_LINE_CHARS).unwrap();
+        assert!(display.max_chars.is_none());
     }
 }

@@ -4,6 +4,7 @@ pub mod directory;
 pub mod download;
 pub mod error;
 pub mod filter;
+pub mod http;
 pub mod parser;
 pub mod query;
 pub mod search;

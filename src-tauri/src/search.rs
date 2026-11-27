@@ -375,9 +375,7 @@ pub async fn search_archive_files(
 async fn run_archive_search(app: AppHandle, request: ArchiveSearchRequest, token: CancellationToken) -> AppResult<()> {
     let config = load_config().await?;
     let password = crate::crypto::reveal_password(&config.credentials.password)?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()?;
+    let client = crate::http::stream_client()?;
 
     let options = SearchOptions {
         keyword: request.keyword.clone(),
@@ -715,9 +713,7 @@ async fn search_entry(
 ) -> AppResult<()> {
     let url = build_full_url(base_url, &entry.path, &entry.log_file)?;
     let password = crate::crypto::reveal_password(&credentials.password)?;
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()?
+    let response = crate::http::stream_client()?
         .get(&url)
         .basic_auth(&credentials.username, Some(password))
         .send()
